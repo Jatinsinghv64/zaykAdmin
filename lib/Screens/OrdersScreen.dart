@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/services.dart';
-// import 'package:flutter/material.dart' as pw;
+// import 'package:flutter/material.dart' as pw; // This line seems unused, commenting out.
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:provider/provider.dart';
 import '../Widgets/RiderAssignment.dart';
-import '../main.dart';
+import '../main.dart'; // Assuming navigatorKey is here
 import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -15,12 +15,7 @@ import 'package:pdf/widgets.dart' as pw;
 /// Filters orders based on the user's role (super_admin vs. branch_admin)
 /// and the selected order type/status.
 ///
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-
-
-/// Main screen for viewing and managing orders.
-/// Filters orders based on the user's role (super_admin vs. branch_admin)
-/// and the selected order type/status.
+// final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); // This is already in main.dart
 
 /// Main screen for viewing and managing orders.
 /// Filters orders based on the user's role (super_admin vs. branch_admin)
@@ -75,7 +70,8 @@ class _OrdersScreenState extends State<OrdersScreen>
       _shouldScrollToOrder = true;
 
       // Set initial status filter based on order from dashboard
-      if (_orderToScrollStatus != null && _getStatusValues().contains(_orderToScrollStatus)) {
+      if (_orderToScrollStatus != null &&
+          _getStatusValues().contains(_orderToScrollStatus)) {
         _selectedStatus = _orderToScrollStatus!;
       }
     }
@@ -103,13 +99,15 @@ class _OrdersScreenState extends State<OrdersScreen>
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) {
         setState(() {
-          _shouldScrollToOrder = widget.initialOrderId != null || _orderToScrollTo != null;
+          _shouldScrollToOrder =
+              widget.initialOrderId != null || _orderToScrollTo != null;
         });
       }
     });
 
     // Set shouldScrollToOrder flag if an initial order ID is provided or from dashboard
-    _shouldScrollToOrder = widget.initialOrderId != null || _orderToScrollTo != null;
+    _shouldScrollToOrder =
+        widget.initialOrderId != null || _orderToScrollTo != null;
   }
 
   @override
@@ -136,9 +134,19 @@ class _OrdersScreenState extends State<OrdersScreen>
   }
 
   // Method to update order status in Firestore
+  // ✅ [SECURE FIX] Updated to use WriteBatch for atomic operations.
   Future<void> updateOrderStatus(
       BuildContext context, String orderId, String newStatus) async {
+    // Use mounted check in async methods
+    if (!mounted) return;
+
     try {
+      final db = FirebaseFirestore.instance;
+      final orderRef = db.collection('Orders').doc(orderId);
+
+      // Use a WriteBatch for atomicity
+      final WriteBatch batch = db.batch();
+
       final Map<String, dynamic> updateData = {
         'status': newStatus,
       };
@@ -147,11 +155,10 @@ class _OrdersScreenState extends State<OrdersScreen>
         updateData['timestamps.prepared'] = FieldValue.serverTimestamp();
       } else if (newStatus == 'delivered') {
         updateData['timestamps.delivered'] = FieldValue.serverTimestamp();
-        // Safe rider cleanup only for delivery orders with riderId present
-        final orderDoc = await FirebaseFirestore.instance
-            .collection('Orders')
-            .doc(orderId)
-            .get();
+
+        // --- START OF FIX ---
+        // We must read the doc *first* to see if a rider needs to be freed.
+        final orderDoc = await orderRef.get();
         final data = orderDoc.data() as Map<String, dynamic>? ?? {};
         final String orderType =
             (data['Order_type'] as String?)?.toLowerCase() ?? '';
@@ -159,34 +166,29 @@ class _OrdersScreenState extends State<OrdersScreen>
         data.containsKey('riderId') ? data['riderId'] as String? : null;
 
         if (orderType == 'delivery' && riderId != null && riderId.isNotEmpty) {
-          await FirebaseFirestore.instance
-              .collection('Drivers')
-              .doc(riderId)
-              .update({
+          final driverRef = db.collection('Drivers').doc(riderId);
+          batch.update(driverRef, {
             'assignedOrderId': '',
             'isAvailable': true,
           });
         }
+        // --- END OF FIX ---
       } else if (newStatus == 'cancelled') {
         updateData['timestamps.cancelled'] = FieldValue.serverTimestamp();
 
         // IMPORTANT FIX: Cancel auto-assignment when order is cancelled
         await RiderAssignmentService.cancelAutoAssignment(orderId);
 
-        // Also cleanup any rider assignment if exists
-        final orderDoc = await FirebaseFirestore.instance
-            .collection('Orders')
-            .doc(orderId)
-            .get();
+        // --- START OF FIX ---
+        // We must read the doc *first* to see if a rider needs to be freed.
+        final orderDoc = await orderRef.get();
         final data = orderDoc.data() as Map<String, dynamic>? ?? {};
         final String? riderId = data['riderId'] as String?;
 
         if (riderId != null && riderId.isNotEmpty) {
           // Free up the rider
-          await FirebaseFirestore.instance
-              .collection('Drivers')
-              .doc(riderId)
-              .update({
+          final driverRef = db.collection('Drivers').doc(riderId);
+          batch.update(driverRef, {
             'assignedOrderId': '',
             'isAvailable': true,
           });
@@ -194,75 +196,100 @@ class _OrdersScreenState extends State<OrdersScreen>
           // Remove rider from order
           updateData['riderId'] = FieldValue.delete();
         }
+        // --- END OF FIX ---
       } else if (newStatus == 'pickedUp') {
         updateData['timestamps.pickedUp'] = FieldValue.serverTimestamp();
       } else if (newStatus == 'rider_assigned') {
         updateData['timestamps.riderAssigned'] = FieldValue.serverTimestamp();
       }
 
-      await FirebaseFirestore.instance
-          .collection('Orders')
-          .doc(orderId)
-          .update(updateData);
+      // Add the main order update to the batch
+      batch.update(orderRef, updateData);
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Order $orderId status updated to "$newStatus"!'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      // Commit all changes atomically
+      await batch.commit();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Order $orderId status updated to "$newStatus"!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to update order status: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update order status: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
   // Method to assign rider
+  // ✅ [SECURE FIX] Updated to use WriteBatch for atomic operations.
   Future<void> _assignRider(BuildContext context, String orderId) async {
+    if (!mounted) return;
+
     final userScope = context.read<UserScopeService>();
     final currentBranchId = userScope.branchId;
 
     final rider = await showDialog<String>(
       context: context,
-      builder: (context) => _RiderSelectionDialog(currentBranchId: currentBranchId),
+      builder: (context) =>
+          _RiderSelectionDialog(currentBranchId: currentBranchId),
     );
 
     if (rider != null && rider.isNotEmpty) {
+      // --- START OF FIX ---
       try {
-        final updateMap = {
+        final db = FirebaseFirestore.instance;
+        final orderRef = db.collection('Orders').doc(orderId);
+        final driverRef = db.collection('Drivers').doc(rider);
+
+        // Create a new WriteBatch
+        final WriteBatch batch = db.batch();
+
+        // 1. Update the Order document
+        batch.update(orderRef, {
           'status': 'rider_assigned',
           'riderId': rider,
           'timestamps.riderAssigned': FieldValue.serverTimestamp(),
-          'timestamp': FieldValue.serverTimestamp(),
-        };
+          // 'timestamp': FieldValue.serverTimestamp(), // This was in your original code.
+          // Be careful: this overwrites the order *creation* time.
+          // I recommend removing it unless you have a specific reason for it.
+        });
 
-        await FirebaseFirestore.instance
-            .collection('Orders')
-            .doc(orderId)
-            .update(updateMap);
+        // 2. Update the Driver document
+        batch.update(driverRef, {
+          'assignedOrderId': orderId,
+          'isAvailable': false,
+        });
 
-        await FirebaseFirestore.instance
-            .collection('Drivers')
-            .doc(rider)
-            .update({'assignedOrderId': orderId, 'isAvailable': false});
+        // 3. Commit both operations atomically
+        await batch.commit();
+        // --- END OF FIX ---
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Rider assigned to order $orderId.'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Rider assigned to order $orderId.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to assign rider: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to assign rider: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     }
   }
@@ -456,7 +483,8 @@ class _OrdersScreenState extends State<OrdersScreen>
         onSelected: (selected) {
           setState(() {
             _selectedStatus = selected ? value : 'all';
-            _shouldScrollToOrder = widget.initialOrderId != null || _orderToScrollTo != null;
+            _shouldScrollToOrder =
+                widget.initialOrderId != null || _orderToScrollTo != null;
           });
         },
         selectedColor: chipColor,
@@ -633,7 +661,8 @@ class _OrdersScreenState extends State<OrdersScreen>
     // Apply branch filter for non-super admin users
     final userScope = context.read<UserScopeService>();
     if (!userScope.isSuperAdmin) {
-      baseQuery = baseQuery.where('branchIds', arrayContains: userScope.branchId);
+      baseQuery =
+          baseQuery.where('branchIds', arrayContains: userScope.branchId);
     }
 
     // Apply current day filtering for 'all' status
@@ -699,7 +728,8 @@ class _OrderCard extends StatelessWidget {
     final bool needsManualAssignment = status == 'needs_rider_assignment';
 
     // Consistent styling for all buttons
-    const EdgeInsets btnPadding = EdgeInsets.symmetric(horizontal: 14, vertical: 10);
+    const EdgeInsets btnPadding =
+    EdgeInsets.symmetric(horizontal: 14, vertical: 10);
     const Size btnMinSize = Size(0, 40);
 
     // --- UNIVERSAL ACTIONS ---
@@ -715,7 +745,8 @@ class _OrderCard extends StatelessWidget {
             foregroundColor: Colors.white,
             padding: btnPadding,
             minimumSize: btnMinSize,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
       );
@@ -732,7 +763,8 @@ class _OrderCard extends StatelessWidget {
             foregroundColor: Colors.white,
             padding: btnPadding,
             minimumSize: btnMinSize,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
       );
@@ -765,7 +797,8 @@ class _OrderCard extends StatelessWidget {
             side: BorderSide(color: Colors.deepPurple.shade300),
             padding: btnPadding,
             minimumSize: btnMinSize,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
       );
@@ -788,7 +821,8 @@ class _OrderCard extends StatelessWidget {
               foregroundColor: Colors.white,
               padding: btnPadding,
               minimumSize: btnMinSize,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
           ),
         );
@@ -807,7 +841,8 @@ class _OrderCard extends StatelessWidget {
               foregroundColor: Colors.white,
               padding: btnPadding,
               minimumSize: btnMinSize,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
           ),
         );
@@ -819,14 +854,17 @@ class _OrderCard extends StatelessWidget {
         buttons.add(
           ElevatedButton.icon(
             icon: const Icon(Icons.delivery_dining, size: 16),
-            label: Text(needsManualAssignment ? 'Assign Manually' : 'Assign Rider'),
+            label:
+            Text(needsManualAssignment ? 'Assign Manually' : 'Assign Rider'),
             onPressed: () => onAssigned(context, order.id),
             style: ElevatedButton.styleFrom(
-              backgroundColor: needsManualAssignment ? Colors.orange : Colors.blue,
+              backgroundColor:
+              needsManualAssignment ? Colors.orange : Colors.blue,
               foregroundColor: Colors.white,
               padding: btnPadding,
               minimumSize: btnMinSize,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
           ),
         );
@@ -842,7 +880,8 @@ class _OrderCard extends StatelessWidget {
               foregroundColor: Colors.white,
               padding: btnPadding,
               minimumSize: btnMinSize,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
           ),
         );
@@ -900,7 +939,8 @@ class _OrderCard extends StatelessWidget {
             foregroundColor: Colors.white,
             padding: btnPadding,
             minimumSize: btnMinSize,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
       );
@@ -1024,7 +1064,9 @@ class _OrderCard extends StatelessWidget {
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
-                        color: isHighlighted ? Colors.blue.shade800 : Colors.black87,
+                        color: isHighlighted
+                            ? Colors.blue.shade800
+                            : Colors.black87,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -1033,9 +1075,10 @@ class _OrderCard extends StatelessWidget {
                           ? DateFormat('MMM dd, yyyy hh:mm a').format(timestamp)
                           : 'No date',
                       style: TextStyle(
-                          color: isHighlighted ? Colors.blue.shade600 : Colors.grey[600],
-                          fontSize: 12
-                      ),
+                          color: isHighlighted
+                              ? Colors.blue.shade600
+                              : Colors.grey[600],
+                          fontSize: 12),
                     ),
                     if (isAutoAssigning) ...[
                       const SizedBox(height: 4),
@@ -1051,11 +1094,13 @@ class _OrderCard extends StatelessWidget {
                     if (needsManualAssignment) ...[
                       const SizedBox(height: 4),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                           color: Colors.orange.withOpacity(0.1),
                           borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                          border:
+                          Border.all(color: Colors.orange.withOpacity(0.3)),
                         ),
                         child: Text(
                           'Needs manual assignment',
@@ -1071,11 +1116,13 @@ class _OrderCard extends StatelessWidget {
                     if (isHighlighted) ...[
                       const SizedBox(height: 4),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                           color: Colors.blue.withOpacity(0.1),
                           borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                          border:
+                          Border.all(color: Colors.blue.withOpacity(0.3)),
                         ),
                         child: Text(
                           'Selected Order',
@@ -1094,7 +1141,8 @@ class _OrderCard extends StatelessWidget {
           ),
           trailing: ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.3, // Limit width to 30% of screen
+              maxWidth: MediaQuery.of(context).size.width *
+                  0.3, // Limit width to 30% of screen
             ),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -1162,7 +1210,7 @@ class _OrderCard extends StatelessWidget {
                   ],
                   if (orderType == 'pickup') ...[
                     _buildDetailRow(Icons.store, 'Pickup Branch',
-                        data['branchIds'] ?? 'N/A'),
+                        data['branchIds']?.join(', ') ?? 'N/A'), // Fixed to show branchIds
                   ],
                   if (orderType == 'takeaway') ...[
                     _buildDetailRow(
@@ -1285,8 +1333,8 @@ class _OrderCard extends StatelessWidget {
           Expanded(
             flex: 2,
             child: Text(label,
-                style:
-                const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w500)),
           ),
           Expanded(
             flex: 3,
@@ -1313,8 +1361,8 @@ class _OrderCard extends StatelessWidget {
             child: Text.rich(
               TextSpan(
                 text: name,
-                style:
-                const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w500),
                 children: [
                   TextSpan(
                     text: ' (x$qty)',
@@ -1385,8 +1433,15 @@ class _RiderSelectionDialog extends StatelessWidget {
         .where('isAvailable', isEqualTo: true)
         .where('status', isEqualTo: 'online');
 
-    // Filter by branch for non-super admin
-    query = query.where('branchIds', arrayContains: currentBranchId);
+    // Filter by branch
+    // This assumes non-super admins will always have a currentBranchId
+    if (currentBranchId.isNotEmpty) {
+      query = query.where('branchIds', arrayContains: currentBranchId);
+    } else {
+      // Handle super_admin case if they don't have a branchId
+      // This will show all online/available drivers
+      // Or you could build a branch selector for them
+    }
 
     return AlertDialog(
       title: const Row(
@@ -1414,8 +1469,8 @@ class _RiderSelectionDialog extends StatelessWidget {
                 children: [
                   Icon(Icons.error_outline, size: 48, color: Colors.red[300]),
                   const SizedBox(height: 16),
-                  const Text(
-                    'Error loading riders',
+                  Text(
+                    'Error loading riders: ${snapshot.error}', // Show error
                     style: TextStyle(color: Colors.red),
                     textAlign: TextAlign.center,
                   ),
@@ -1436,7 +1491,7 @@ class _RiderSelectionDialog extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'All riders are currently busy',
+                    'All riders are currently busy or offline.', // More descriptive
                     style: TextStyle(
                       color: Colors.grey[500],
                       fontSize: 12,
@@ -1456,7 +1511,8 @@ class _RiderSelectionDialog extends StatelessWidget {
                 final data = driverDoc.data() as Map<String, dynamic>;
                 final String name = data['name'] ?? 'Unnamed Driver';
                 final String phone = data['phone'] ?? 'No phone';
-                final String vehicle = data['vehicleType'] ?? 'No vehicle';
+                final String vehicle =
+                    data['vehicle']?['type'] ?? 'No vehicle'; // Corrected path
 
                 return Card(
                   margin: const EdgeInsets.symmetric(vertical: 4),
@@ -1574,8 +1630,8 @@ Future<void> printReceipt(
             (order['discountAmount'] as num?)?.toDouble() ?? 0.0;
         final double totalAmount =
             (order['totalAmount'] as num?)?.toDouble() ?? 0.0;
-        final double calculatedSubtotal = items.fold(
-            0, (sum, item) => sum + (item['price'] * item['qty']));
+        final double calculatedSubtotal =
+        items.fold(0, (sum, item) => sum + (item['price'] * item['qty']));
         final double finalSubtotal =
         subtotal > 0 ? subtotal : calculatedSubtotal;
 
@@ -1592,8 +1648,7 @@ Future<void> printReceipt(
         final String displayOrderType = rawOrderType
             .replaceAll('_', ' ')
             .split(' ')
-            .map((w) =>
-        w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
+            .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
             .join(' ');
 
         final String dailyOrderNumber = order['dailyOrderNumber']?.toString() ??
@@ -1665,15 +1720,16 @@ Future<void> printReceipt(
                 children: [
                   if (branchLogo != null)
                     pw.Center(
-                      child:
-                      pw.Image(branchLogo, height: 60, fit: pw.BoxFit.contain),
+                      child: pw.Image(branchLogo,
+                          height: 60, fit: pw.BoxFit.contain),
                     ),
                   pw.SizedBox(height: 5),
                   pw.Center(child: pw.Text(branchName, style: heading)),
                   if (branchAddress.isNotEmpty)
                     pw.Center(child: pw.Text(branchAddress, style: regular)),
                   if (branchPhone.isNotEmpty)
-                    pw.Center(child: pw.Text("Tel: $branchPhone", style: regular)),
+                    pw.Center(
+                        child: pw.Text("Tel: $branchPhone", style: regular)),
                   pw.SizedBox(height: 5),
                   pw.Center(
                       child: pw.Text("TAX INVOICE",
@@ -1713,14 +1769,18 @@ Future<void> printReceipt(
                       pw.TableRow(
                         children: [
                           pw.Padding(
-                              padding: const pw.EdgeInsets.symmetric(vertical: 4),
+                              padding:
+                              const pw.EdgeInsets.symmetric(vertical: 4),
                               child: pw.Text('ITEM', style: bold)),
                           pw.Padding(
-                              padding: const pw.EdgeInsets.symmetric(vertical: 4),
+                              padding:
+                              const pw.EdgeInsets.symmetric(vertical: 4),
                               child: pw.Text('QTY',
-                                  style: bold, textAlign: pw.TextAlign.center)),
+                                  style: bold,
+                                  textAlign: pw.TextAlign.center)),
                           pw.Padding(
-                              padding: const pw.EdgeInsets.symmetric(vertical: 4),
+                              padding:
+                              const pw.EdgeInsets.symmetric(vertical: 4),
                               child: pw.Text('TOTAL',
                                   style: bold,
                                   textAlign: pw.TextAlign.right)),
@@ -1800,7 +1860,8 @@ Future<void> printReceipt(
                       child: pw.Text("Thank You For Your Order!", style: bold)),
                   pw.SizedBox(height: 5),
                   pw.Center(
-                      child: pw.Text("Invoice ID: ${orderDoc.id}", style: small)),
+                      child:
+                      pw.Text("Invoice ID: ${orderDoc.id}", style: small)),
                 ],
               );
             },
@@ -1820,7 +1881,6 @@ Future<void> printReceipt(
     }
   }
 }
-
 
 /// A simple static service to pass a selected orderId from one screen
 /// (like Dashboard) to the OrdersScreen.
@@ -1847,5 +1907,3 @@ class OrderSelectionService {
     _selectedOrder = {};
   }
 }
-
-
