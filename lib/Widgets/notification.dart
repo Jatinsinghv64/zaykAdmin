@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:vibration/vibration.dart';
 
 import '../Screens/OrdersScreen.dart';
@@ -13,78 +14,44 @@ class OrderNotificationService with ChangeNotifier {
   final AudioPlayer _audioPlayer = AudioPlayer();
   static const String _notificationSoundPath = 'notification.mp3';
 
-  StreamSubscription? _orderListener;
   bool _isDialogShowing = false;
-  final Set<String> _processedOrderIds = {};
   UserScopeService? _scopeService;
+
+  // StreamSubscription for the background service listener
+  StreamSubscription<Map<String, dynamic>?>? _serviceListener;
 
   /// ✅ CRITICAL: This method must be called after login
   void init(UserScopeService scope, GlobalKey<NavigatorState> navigatorKey) {
     _scopeService = scope;
-    if (!scope.isSuperAdmin && scope.branchIds.isNotEmpty) {
-      debugPrint('🎯 OrderNotificationService: Initializing listener for branches: ${scope.branchIds}');
-      listenForNewOrders(scope.branchIds, navigatorKey);
-    } else {
-      debugPrint('🎯 OrderNotificationService: Not a branch_admin or no branches. Listener not started.');
-    }
-  }
 
-  /// Starts the real-time Firestore listener for pending orders.
-  void listenForNewOrders(
-      List<String> branchIds, GlobalKey<NavigatorState> navigatorKey) {
-    // Cancel any existing listener
-    _orderListener?.cancel();
+    // Cancel any existing listener before creating a new one
+    _serviceListener?.cancel();
 
-    final query = _db
-        .collection('Orders')
-        .where('status', isEqualTo: 'pending')
-        .where('branchIds', arrayContainsAny: branchIds);
+    final service = FlutterBackgroundService();
 
-    debugPrint('🎯 Setting up Firestore listener for query...');
+    // Listen for 'new_order' events from the background service
+    _serviceListener = service.on('new_order').listen((event) {
+      debugPrint(
+          "🎯 OrderNotificationService: Received 'new_order' event from background.");
 
-    _orderListener = query.snapshots().listen((snapshot) {
-      debugPrint('🎯 Firestore snapshot received with ${snapshot.docs.length} pending orders.');
-      debugPrint('🎯 Document changes: ${snapshot.docChanges.length}');
+      final navContext = navigatorKey.currentContext;
+      if (navContext != null && event != null && event is Map<String, dynamic>) {
+        final data = event;
+        final orderId = data['orderId'] as String?;
 
-      // Log each document change
-      for (var change in snapshot.docChanges) {
-        debugPrint('🎯 Change type: ${change.type} for order: ${change.doc.id}');
-      }
-
-      // Find the first order that is NOT already being processed
-      for (var doc in snapshot.docs) {
-        final orderId = doc.id;
-
-        debugPrint('🎯 Checking order: $orderId, processed: ${_processedOrderIds.contains(orderId)}');
-
-        // 1. Check if it's a new order
-        if (!_processedOrderIds.contains(orderId)) {
-          // 2. Check if a dialog is already on screen
-          final navContext = navigatorKey.currentContext;
-          debugPrint('🎯 Navigator context available: ${navContext != null}');
-          debugPrint('🎯 Dialog currently showing: $_isDialogShowing');
-
-          if (navContext != null && !_isDialogShowing) {
-            // 3. Add to the set *just before* showing the dialog
-            _processedOrderIds.add(orderId);
-            debugPrint('🎯 New order found! Showing ID: $orderId');
-
-            final data = doc.data() as Map<String, dynamic>;
-            _showNewOrderPopup(navContext, orderId, data);
-
-            // 4. Stop the loop. We only want to show ONE dialog at a time.
-            break;
-          } else {
-            // A dialog is already showing, so we 'defer' this order.
-            debugPrint('🎯 OrderNotificationService: Dialog busy. Deferring order $orderId');
-          }
+        if (orderId != null && !_isDialogShowing) {
+          debugPrint('🎯 OrderNotificationService: Showing dialog for $orderId');
+          // Show the in-app popup
+          _showNewOrderPopup(navContext, orderId, data);
+        } else {
+          debugPrint(
+              '🎯 OrderNotificationService: Dialog busy or orderId null, skipping popup.');
         }
       }
-    }, onError: (error) {
-      debugPrint('❌ OrderNotificationService: Listener error: $error');
     });
 
-    debugPrint('✅ OrderNotificationService: Firestore listener started successfully');
+    debugPrint(
+        '✅ OrderNotificationService: Initialized and listening to BackgroundService.');
   }
 
   /// Triggers device vibration
@@ -107,7 +74,8 @@ class OrderNotificationService with ChangeNotifier {
       debugPrint('🔊 OrderNotificationService: Playing sound');
     } catch (e) {
       debugPrint('Error playing notification sound: $e');
-      debugPrint('Please ensure "assets/$_notificationSoundPath" is in your assets and pubspec.yaml');
+      debugPrint(
+          'Please ensure "assets/$_notificationSoundPath" is in your assets and pubspec.yaml');
     }
   }
 
@@ -122,7 +90,7 @@ class OrderNotificationService with ChangeNotifier {
 
     debugPrint('🎯 Showing new order dialog for: $orderId');
 
-    // Play sound and vibrate
+    // Play sound and vibrate for the in-app dialog
     _playNotificationSound();
     _vibrate();
 
@@ -172,9 +140,8 @@ class OrderNotificationService with ChangeNotifier {
     ).then((_) {
       // Ensure flag is reset when dialog is closed
       _isDialogShowing = false;
-      // Remove orderId so it can be shown again if it's still pending
-      _processedOrderIds.remove(orderId);
-      debugPrint('🎯 Dialog closed, isDialogShowing reset to: $_isDialogShowing');
+      debugPrint(
+          '🎯 Dialog closed, isDialogShowing reset to: $_isDialogShowing');
     });
   }
 
@@ -183,7 +150,8 @@ class OrderNotificationService with ChangeNotifier {
       BuildContext context, String orderId) async {
     // Check if scope is available
     if (_scopeService == null || _scopeService!.branchId.isEmpty) {
-      debugPrint("Error: UserScopeService not initialized or has no branchId. Cannot assign rider.");
+      debugPrint(
+          "Error: UserScopeService not initialized or has no branchId. Cannot assign rider.");
       // Still update status
       await _updateOrderStatus(orderId, 'preparing');
       return;
@@ -238,24 +206,29 @@ class OrderNotificationService with ChangeNotifier {
 
       await _db.collection('Orders').doc(orderId).update(updateData);
 
-      debugPrint('✅ OrderNotificationService: Order $orderId status updated to "$newStatus"');
+      debugPrint(
+          '✅ OrderNotificationService: Order $orderId status updated to "$newStatus"');
     } catch (e) {
-      debugPrint('❌ OrderNotificationService: Failed to update order $orderId: $e');
+      debugPrint(
+          '❌ OrderNotificationService: Failed to update order $orderId: $e');
     }
   }
 
   /// Cleans up the listener when the service is disposed.
   @override
   void dispose() {
-    _orderListener?.cancel();
+    _serviceListener?.cancel(); // Cancel the service listener
     _audioPlayer.dispose();
     RiderAssignmentService.dispose();
-    debugPrint('🎯 OrderNotificationService: Disposed and listener cancelled.');
+    debugPrint('🎯 OrderNotificationService: Disposed and service listener cancelled.');
     super.dispose();
   }
 }
 
+//
 // New Order Dialog Widget
+// (This widget remains unchanged)
+//
 class NewOrderDialog extends StatefulWidget {
   final String orderNumber;
   final String customerName;

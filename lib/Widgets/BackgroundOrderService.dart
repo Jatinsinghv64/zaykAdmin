@@ -16,7 +16,6 @@ import '../firebase_options.dart';
 
 @pragma('vm:entry-point')
 class BackgroundOrderService {
-  // ... channel definitions are correct ...
   static const String _channelId = 'order_background_service';
   static const String _channelName = 'Order Listener Service';
   static const String _channelDesc = 'Maintains the restaurant state';
@@ -27,7 +26,6 @@ class BackgroundOrderService {
 
   @pragma('vm:entry-point')
   static Future<void> initializeService() async {
-    // ... this function is correct ...
     final service = FlutterBackgroundService();
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
       _channelId,
@@ -65,7 +63,6 @@ class BackgroundOrderService {
     return true;
   }
 
-  // ✅ --- NEW HELPER FUNCTION TO FIX THE CRASH ---
   /// Converts complex Firestore data types (Timestamp, GeoPoint)
   /// into simple, JSON-encodable types.
   @pragma('vm:entry-point')
@@ -111,11 +108,9 @@ class BackgroundOrderService {
     });
     return sanitizedMap;
   }
-  // --- END OF NEW FUNCTION ---
 
   @pragma('vm:entry-point')
   static Future<void> onStart(ServiceInstance service) async {
-    // ... Firebase init is correct ...
     if (Firebase.apps.isEmpty) {
       try {
         await Firebase.initializeApp(
@@ -128,13 +123,14 @@ class BackgroundOrderService {
       }
     }
 
-    // ... local instances are correct ...
     final FirebaseFirestore db = FirebaseFirestore.instance;
     final AudioPlayer audioPlayer = AudioPlayer();
     final Set<String> processedOrderIds = {};
     StreamSubscription? orderListener;
 
-    // ... plugin initializations are correct ...
+    // ✅ ADDED: Track app lifecycle state
+    bool isAppInForeground = true; // Assume foreground at start
+
     final FlutterLocalNotificationsPlugin localNotifications =
     FlutterLocalNotificationsPlugin();
     await localNotifications.initialize(
@@ -157,10 +153,19 @@ class BackgroundOrderService {
         ?.createNotificationChannel(orderChannel);
     debugPrint('✅ Background Service: Local Notifications Initialized');
 
-    // ... service.on('updateBranchIds') listener ...
+    // ✅ ADDED: Listeners for app state from UI
+    service.on('appInForeground').listen((_) {
+      isAppInForeground = true;
+      debugPrint('✅ Background Service: App is FOREGROUND');
+    });
+
+    service.on('appInBackground').listen((_) {
+      isAppInForeground = false;
+      debugPrint('✅ Background Service: App is BACKGROUND');
+    });
+
     service.on('updateBranchIds').listen((event) async {
       if (event is Map<String, dynamic>) {
-        // ... all logic for starting/stopping listener is correct ...
         final List<String> branchIds =
         List<String>.from(event['branchIds'] ?? []);
         orderListener?.cancel();
@@ -194,7 +199,8 @@ class BackgroundOrderService {
               'content': 'Monitoring orders for ${branchIds.join(', ')}'
             });
             debugPrint(
-                '🎯 Background Service: Received ${snapshot.docs.length} orders');
+                '🎯 Background Service: Received ${snapshot.docs.length} orders. App in foreground: $isAppInForeground');
+
             for (var doc in snapshot.docs) {
               final orderId = doc.id;
               if (!processedOrderIds.contains(orderId)) {
@@ -202,19 +208,30 @@ class BackgroundOrderService {
                 debugPrint(
                     '🎯 Background Service: New order detected: $orderId');
 
-                await _showOrderNotification(doc, localNotifications);
-                await _playNotificationSound(audioPlayer);
-                await _vibrate();
+                // ✅ --- MODIFIED LOGIC ---
+                if (!isAppInForeground) {
+                  // App is in background or terminated.
+                  // Show notification, play sound, vibrate.
+                  debugPrint(
+                      'App is background, showing local notification.');
+                  await _showOrderNotification(doc, localNotifications);
+                  await _playNotificationSound(audioPlayer);
+                  await _vibrate();
+                } else {
+                  // App is in foreground, just log it.
+                  // The UI (OrderNotificationService) will handle its own sound/vibration.
+                  debugPrint(
+                      'App is foreground, skipping local notification.');
+                }
 
+                // ✅ ALWAYS invoke the event.
+                // The foreground UI (OrderNotificationService) will receive this.
                 final data = doc.data() as Map<String, dynamic>;
                 data['orderId'] = orderId;
                 data['id'] = orderId;
-
-                // ✅ --- CRITICAL FIX: Sanitize data before invoking ---
                 final sanitizedData = _sanitizeDataForInvoke(data);
-
-                // Now, invoke with the safe, sanitized data
                 service.invoke('new_order', sanitizedData);
+                // --- END MODIFIED LOGIC ---
               }
             }
           }, onError: (error) {
@@ -235,13 +252,13 @@ class BackgroundOrderService {
       }
     });
 
+    // Initialize with empty branches; RestaurantStatusService will update it
     service.invoke('updateBranchIds', {'branchIds': []});
   }
 
   static Future<void> _showOrderNotification(
       QueryDocumentSnapshot doc,
       FlutterLocalNotificationsPlugin plugin) async {
-    // ... this function is correct ...
     try {
       final data = doc.data() as Map<String, dynamic>;
       final orderNumber = data['dailyOrderNumber']?.toString() ??
@@ -255,7 +272,7 @@ class BackgroundOrderService {
         importance: Importance.max,
         priority: Priority.high,
         showWhen: true,
-        playSound: true,
+        playSound: true, // This will use the default sound
         enableVibration: true,
       );
       const NotificationDetails platformChannelSpecifics =
@@ -274,14 +291,19 @@ class BackgroundOrderService {
   }
 
   static Future<void> _playNotificationSound(AudioPlayer audioPlayer) async {
-    // ... this function is correct ...
     try {
+      // Set release mode to ensure sound plays repeatedly
+      await audioPlayer.setReleaseMode(ReleaseMode.loop);
       await audioPlayer.play(AssetSource('notification.mp3'));
       debugPrint('🔊 Background Service: Playing sound');
+
+      // Stop the sound after a few seconds
+      Future.delayed(const Duration(seconds: 5), () {
+        audioPlayer.stop();
+        audioPlayer.setReleaseMode(ReleaseMode.release);
+        debugPrint('🔊 Background Service: Stopping loop');
+      });
     } catch (e) {
-      // Your log shows this error.
-      // This is NOT a crash, just an error.
-      // Please ensure "assets/notification.mp3" is in your pubspec.yaml
       debugPrint('❌ Error playing sound: $e');
       debugPrint(
           '🔔 Please ensure "assets/notification.mp3" is in your pubspec.yaml');
@@ -289,11 +311,10 @@ class BackgroundOrderService {
   }
 
   static Future<void> _vibrate() async {
-    // ... this function is correct ...
     try {
       bool? hasVibrator = await Vibration.hasVibrator();
       if (hasVibrator == true) {
-        Vibration.vibrate(pattern: [500, 1000]);
+        Vibration.vibrate(pattern: [500, 1000, 500, 1000]); // Vibrate twice
         debugPrint('📳 Background Service: Vibrating');
       }
     } catch (e) {
@@ -303,10 +324,10 @@ class BackgroundOrderService {
 
   @pragma('vm:entry-point')
   static Future<void> startService() async {
-    // ... this function is correct ...
     final service = FlutterBackgroundService();
     try {
       await service.startService();
+      // Initialize with empty list; RestaurantStatusService will update it
       service.invoke('updateBranchIds', {'branchIds': []});
       debugPrint("🚀 Background Service: Main service started successfully.");
     } catch (e) {
@@ -315,7 +336,6 @@ class BackgroundOrderService {
   }
 
   static Future<void> updateListener(List<String> branchIds) async {
-    // ... this function is correct ...
     try {
       final service = FlutterBackgroundService();
       service.invoke('updateBranchIds', {'branchIds': branchIds});
@@ -327,7 +347,6 @@ class BackgroundOrderService {
   }
 
   static Future<bool> isServiceRunning() async {
-    // ... this function is correct ...
     try {
       final service = FlutterBackgroundService();
       return await service.isRunning();

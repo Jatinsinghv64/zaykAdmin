@@ -1,12 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_background_service/flutter_background_service.dart'; // Import service
@@ -20,144 +16,15 @@ import 'firebase_options.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-// Initialize flutter_local_notifications
-final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-FlutterLocalNotificationsPlugin();
+// All FCM-related code (handlers, global plugins, channels) has been removed.
 
-const AndroidNotificationChannel channel = AndroidNotificationChannel(
-  'high_importance_channel', // ID
-  'High Importance Notifications', // Title
-  description: 'This channel is used for important order notifications.', // Description
-  importance: Importance.max,
-  playSound: true,
-  enableVibration: true,
-);
-
-// ✅ ENHANCED BACKGROUND HANDLER - WORKS WHEN APP IS TERMINATED
-@pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  debugPrint("BACKGROUND HANDLER: App was TERMINATED or in BACKGROUND");
-  // ... (rest of your handler)
-}
-
-
-// ✅ UNIVERSAL NOTIFICATION DISPLAY METHOD
-Future<void> _showNotification(RemoteMessage message) async {
-  String title = 'New Order';
-  String body = 'You have a new order';
-  Map<String, dynamic> data = {};
-
-  if (message.notification != null) {
-    title = message.notification?.title ?? title;
-    body = message.notification?.body ?? body;
-  }
-
-  if (message.data.isNotEmpty) {
-    data = message.data;
-    title = data['title'] ?? title;
-    body = data['body'] ?? body;
-  }
-
-  debugPrint("Showing notification: $title - $body");
-
-  const AndroidNotificationDetails androidPlatformChannelSpecifics =
-  AndroidNotificationDetails(
-    'high_importance_channel',
-    'High Importance Notifications',
-    channelDescription:
-    'This channel is used for important order notifications.',
-    importance: Importance.max,
-    priority: Priority.high,
-    showWhen: true,
-    autoCancel: true,
-    enableVibration: true,
-    playSound: true,
-    visibility: NotificationVisibility.public,
-  );
-
-  const DarwinNotificationDetails iosPlatformChannelSpecifics =
-  DarwinNotificationDetails(
-    presentAlert: true,
-    presentBadge: true,
-    presentSound: true,
-  );
-
-  const NotificationDetails platformChannelSpecifics = NotificationDetails(
-    android: androidPlatformChannelSpecifics,
-    iOS: iosPlatformChannelSpecifics,
-  );
-
-  final int notificationId =
-  DateTime.now().millisecondsSinceEpoch.remainder(100000);
-
-  await flutterLocalNotificationsPlugin.show(
-    notificationId,
-    title,
-    body,
-    platformChannelSpecifics,
-    payload: jsonEncode(data),
-  );
-
-  debugPrint("✅ NOTIFICATION DISPLAYED: $title");
-}
-
-// ✅ HANDLE NOTIFICATION TAP
-void _onNotificationTap(String? payload) {
-  debugPrint("Notification tapped with payload: $payload");
-  if (payload != null) {
-    try {
-      final data = jsonDecode(payload) as Map<String, dynamic>;
-      final orderId = data['orderId'];
-      if (orderId != null) {
-        _navigateToOrder(orderId);
-      }
-    } catch (e) {
-      debugPrint("Error parsing notification payload: $e");
-    }
-  }
-}
-
-// ADD THIS NEW GLOBAL FUNCTION (Corrected Version)
-void showInAppOrderDialog(Map<String, dynamic> data) {
-  final context = navigatorKey.currentContext;
-  if (context == null) {
-    debugPrint("Cannot show dialog, navigator context is null");
-    return;
-  }
-  final String orderNumber = data['dailyOrderNumber']?.toString() ?? 'N/A';
-  final String customerName = data['customerName']?.toString() ?? 'Unknown';
-  final String orderId = data['orderId']?.toString() ?? '';
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (BuildContext context) {
-      return AlertDialog(
-        title: const Text('🎉 New Order Received!'),
-        content: Text('Order #${orderNumber} from $customerName'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Dismiss'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              if (orderId.isNotEmpty) {
-                _navigateToOrder(orderId);
-              }
-            },
-            child: const Text('View Order'),
-          ),
-        ],
-      );
-    },
-  );
-}
-
+/// This function is still used by notification.dart (via the dialog)
+/// to navigate to the order screen.
 void _navigateToOrder(String orderId) {
   final context = navigatorKey.currentContext;
   if (context != null) {
+    // This navigation finds the HomeScreen and lets the OrdersScreen logic
+    // (which checks OrderSelectionService) handle the highlighting.
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (context) => HomeScreen()),
           (route) => false,
@@ -165,41 +32,6 @@ void _navigateToOrder(String orderId) {
     debugPrint("Should navigate to order: $orderId");
   } else {
     debugPrint("❌ Cannot navigate! Navigator context is null.");
-  }
-}
-
-// ✅ COMPLETE LOCAL NOTIFICATIONS INITIALIZATION
-Future<void> _initializeLocalNotifications() async {
-  const AndroidInitializationSettings androidInitializationSettings =
-  AndroidInitializationSettings('@mipmap/ic_launcher');
-
-  const DarwinInitializationSettings iosInitializationSettings =
-  DarwinInitializationSettings(
-    requestAlertPermission: true,
-    requestBadgePermission: true,
-    requestSoundPermission: true,
-  );
-
-  const InitializationSettings initializationSettings =
-  InitializationSettings(
-    android: androidInitializationSettings,
-    iOS: iosInitializationSettings,
-  );
-
-  await flutterLocalNotificationsPlugin.initialize(
-    initializationSettings,
-  );
-
-  try {
-    final bool? granted = await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
-    debugPrint("Android 13+ Notification Permission Granted: $granted");
-  } on PlatformException catch (e) {
-    debugPrint("Error requesting Android 13+ notification permission: $e");
-  } catch (e) {
-    debugPrint("Generic error requesting notification permission: $e");
   }
 }
 
@@ -211,34 +43,28 @@ void main() async {
   );
 
   // --- START: ROBUST SERVICE LAUNCH ---
-  // This is the fix for the app hanging on launch
   final service = FlutterBackgroundService();
 
-  // ✅ FIX: ALWAYS initialize (configure) the service first.
-  // This links the new app instance to the existing background process.
+  // ✅ ALWAYS initialize (configure) the service first.
   await BackgroundOrderService.initializeService();
 
   // Now, check if it's running.
   bool isRunning = await service.isRunning();
 
   if (!isRunning) {
-    debugPrint(
-        "🚀 MAIN: Service is not running. Starting it.");
+    debugPrint("🚀 MAIN: Service is not running. Starting it.");
     // If not running, start it.
     await BackgroundOrderService.startService();
   } else {
-    debugPrint(
-        "✅ MAIN: Service is already running. Initialization complete.");
+    debugPrint("✅ MAIN: Service is already running. Initialization complete.");
   }
   // --- END: ROBUST SERVICE LAUNCH ---
 
-  await _initializeLocalNotifications(); // For the main app's notifications
-
+  // Removed call to _initializeLocalNotifications()
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
-  // ... (rest of your MyApp class is correct) ...
   const MyApp({super.key});
 
   @override
@@ -251,10 +77,10 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider<UserScopeService>(
           create: (_) => UserScopeService(),
         ),
+        // This service now listens to the BackgroundService, not Firestore/FCM
         ChangeNotifierProvider<OrderNotificationService>(
           create: (_) => OrderNotificationService(),
         ),
-        // ✅ ADD RESTAURANT STATUS SERVICE
         ChangeNotifierProvider<RestaurantStatusService>(
           create: (_) => RestaurantStatusService(),
         ),
@@ -313,8 +139,6 @@ class MyApp extends StatelessWidget {
     );
   }
 }
-
-// ... (Rest of your file (Permissions, AppScreen, AuthService, AuthWrapper, LoginScreen, ScopeLoader, UserScopeService, etc.) is correct and does not need changes) ...
 
 // Permission constants
 class Permissions {
@@ -509,8 +333,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// ScopeLoader with FCM initialization
-// ScopeLoader with OrderNotificationService initialization
+// ScopeLoader
 class ScopeLoader extends StatefulWidget {
   final User user;
   const ScopeLoader({super.key, required this.user});
@@ -519,13 +342,39 @@ class ScopeLoader extends StatefulWidget {
   State<ScopeLoader> createState() => _ScopeLoaderState();
 }
 
-class _ScopeLoaderState extends State<ScopeLoader> {
+// ✅ ADDED WidgetsBindingObserver to track app lifecycle
+class _ScopeLoaderState extends State<ScopeLoader> with WidgetsBindingObserver {
+  final _service = FlutterBackgroundService();
+
   @override
   void initState() {
     super.initState();
+    // ✅ Tell the service the app is in the foreground
+    WidgetsBinding.instance.addObserver(this);
+    _service.invoke('appInForeground');
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadScope();
     });
+  }
+
+  // ✅ ADDED LIFECYCLE HANDLER
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      _service.invoke('appInForeground');
+    } else {
+      // Treat inactive, paused, detached as background
+      _service.invoke('appInBackground');
+    }
+    debugPrint('App changed state: $state');
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   Future<void> _loadScope() async {
@@ -547,19 +396,16 @@ class _ScopeLoaderState extends State<ScopeLoader> {
         statusService.initialize(scopeService.branchId,
             restaurantName: restaurantName);
 
-        // Wait for status to load - DO NOT auto-start background service here
-        // Let the RestaurantStatusService handle it based on isOpen status
+        // Wait for status to load
         await Future.delayed(const Duration(seconds: 2));
       }
 
-      // Initialize notification service (for foreground listening)
+      // ✅ Initialize notification service (now listens to background service)
       notificationService.init(scopeService, navigatorKey);
 
       debugPrint(
-          '🎯 OrderNotificationService initialized with branches: ${scopeService.branchIds}');
+          '🎯 OrderNotificationService initialized (listening to background service).');
 
-      // ❌ REMOVED: Background service auto-start
-      // The RestaurantStatusService will handle starting/stopping based on isOpen status
       debugPrint(
           '🟡 Background service will be controlled by restaurant status');
     } else {
@@ -627,8 +473,7 @@ class UserScopeService with ChangeNotifier {
       final staffSnap = await _db.collection('staff').doc(_userEmail).get();
 
       if (!staffSnap.exists) {
-        debugPrint(
-            '❌ Scope Error: No staff document found for $_userEmail.');
+        debugPrint('❌ Scope Error: No staff document found for $_userEmail.');
         await clearScope();
         return false;
       }
@@ -637,8 +482,7 @@ class UserScopeService with ChangeNotifier {
       final bool isActive = data?['isActive'] ?? false;
 
       if (!isActive) {
-        debugPrint(
-            '❌ Scope Error: Staff member $_userEmail is not active.');
+        debugPrint('❌ Scope Error: Staff member $_userEmail is not active.');
         await clearScope();
         return false;
       }
@@ -792,4 +636,3 @@ class ProfessionalErrorWidget extends StatelessWidget {
     );
   }
 }
-
