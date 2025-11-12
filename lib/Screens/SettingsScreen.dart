@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../Widgets/AccessDeniedWidget.dart';
 import '../Widgets/Authorization.dart';
-import '../Widgets/ScopeLoader.dart';
+import '../Widgets/Permissions.dart';
 import '../main.dart';
 import 'AnalyticsScreen.dart';
 import 'BranchManagement.dart';

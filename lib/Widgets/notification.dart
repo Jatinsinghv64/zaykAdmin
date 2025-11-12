@@ -9,7 +9,6 @@ import 'package:vibration/vibration.dart';
 import '../Screens/OrdersScreen.dart';
 import '../main.dart';
 import 'RiderAssignment.dart';
-import 'ScopeLoader.dart';
 
 class OrderNotificationService with ChangeNotifier {
   final FirebaseFirestore _db = FirebaseFirestore.instance;

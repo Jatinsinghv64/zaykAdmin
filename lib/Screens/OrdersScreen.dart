@@ -6,7 +6,6 @@ import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:provider/provider.dart';
 import '../Widgets/RiderAssignment.dart';
-import '../Widgets/ScopeLoader.dart';
 import '../main.dart';
 import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';

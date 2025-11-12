@@ -1,8 +1,8 @@
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../Widgets/Permissions.dart';
 import '../Widgets/RestaurantStatusService.dart';
-import '../Widgets/ScopeLoader.dart';
 import '../main.dart';
 import 'DashboardScreen.dart';
 import 'MenuManagement.dart';

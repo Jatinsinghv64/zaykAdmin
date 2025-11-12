@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-
 class ProfessionalErrorWidget extends StatelessWidget {
   final String title;
   final String message;

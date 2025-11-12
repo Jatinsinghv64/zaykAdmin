@@ -4,8 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../Screens/LoginScreen.dart';
 import '../main.dart';
-import 'ScopeLoader.dart';
-
+// Auth Service
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   Stream<User?> get userStream => _auth.authStateChanges();
