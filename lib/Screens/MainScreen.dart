@@ -465,8 +465,9 @@ class BadgeCountProvider with ChangeNotifier {
     Query query = FirebaseFirestore.instance
         .collection('Orders')
         .where('status', isEqualTo: 'needs_rider_assignment')
-        .where('needsAssignmentAt', isGreaterThanOrEqualTo: startOfToday)
-        .where('needsAssignmentAt', isLessThan: endOfToday);
+    // --- FIX: Query on 'timestamp' instead of 'needsAssignmentAt' ---
+        .where('timestamp', isGreaterThanOrEqualTo: startOfToday)
+        .where('timestamp', isLessThan: endOfToday);
 
     if (branchId != null && branchId.isNotEmpty) {
       query = query.where('branchIds', arrayContains: branchId);
@@ -474,11 +475,22 @@ class BadgeCountProvider with ChangeNotifier {
 
     _subscription = query.snapshots().listen((snapshot) {
       final newCount = snapshot.docs.length;
-      debugPrint('BadgeCountProvider: Count updated to $newCount');
-      _manualAssignmentCount = newCount;
-      notifyListeners();
+
+      // --- FIX: Only notify if the count has actually changed ---
+      if (newCount != _manualAssignmentCount) {
+        debugPrint('BadgeCountProvider: Count updated from $_manualAssignmentCount to $newCount');
+        _manualAssignmentCount = newCount;
+        notifyListeners();
+      }
+      // --- End of FIX ---
+
     }, onError: (error) {
       debugPrint('BadgeCountProvider stream error: $error');
+      // Optional: Reset count to 0 on error
+      if (_manualAssignmentCount != 0) {
+        _manualAssignmentCount = 0;
+        notifyListeners();
+      }
     });
   }
 
@@ -488,4 +500,3 @@ class BadgeCountProvider with ChangeNotifier {
     super.dispose();
   }
 }
-

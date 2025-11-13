@@ -42,7 +42,7 @@ class _ManualAssignmentScreenState extends State<ManualAssignmentScreen> {
   Widget build(BuildContext context) {
     final userScope = context.read<UserScopeService>();
 
-    // --- FIX: Add date filter for "current day" ---
+    // --- Add date filter for "current day" ---
     final now = DateTime.now();
     final startOfToday = DateTime(now.year, now.month, now.day);
     final endOfToday = startOfToday.add(const Duration(days: 1));
@@ -51,8 +51,9 @@ class _ManualAssignmentScreenState extends State<ManualAssignmentScreen> {
     Query query = FirebaseFirestore.instance
         .collection('Orders')
         .where('status', isEqualTo: 'needs_rider_assignment')
-        .where('needsAssignmentAt', isGreaterThanOrEqualTo: startOfToday)
-        .where('needsAssignmentAt', isLessThan: endOfToday);
+    // --- FIX: Query on 'timestamp' instead of 'needsAssignmentAt' ---
+        .where('timestamp', isGreaterThanOrEqualTo: startOfToday)
+        .where('timestamp', isLessThan: endOfToday);
 
     // Filter by branch for non-super admins
     if (!userScope.isSuperAdmin) {
@@ -76,7 +77,9 @@ class _ManualAssignmentScreenState extends State<ManualAssignmentScreen> {
         ),
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: query.orderBy('needsAssignmentAt', descending: true).snapshots()
+        // --- FIX: Removed the .orderBy() to avoid needing a composite index ---
+        // We will sort the results manually in the builder.
+        stream: query.snapshots()
         as Stream<QuerySnapshot<Map<String, dynamic>>>,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -105,6 +108,12 @@ class _ManualAssignmentScreenState extends State<ManualAssignmentScreen> {
                     Text(
                       '${snapshot.error}',
                       style: TextStyle(color: Colors.red[700]),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'This might be due to a missing Firestore index. Please check your debug console for a link to create it.',
+                      style: TextStyle(color: Colors.grey, fontSize: 12),
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -143,6 +152,34 @@ class _ManualAssignmentScreenState extends State<ManualAssignmentScreen> {
           }
 
           final docs = snapshot.data!.docs;
+
+          // --- FIX: Sort the documents in-memory ---
+          // This avoids the complex Firestore index requirement
+          // by sorting after the data is fetched.
+          try {
+            docs.sort((a, b) {
+              final aData = a.data();
+              final bData = b.data();
+
+              // --- FIX: Sort by 'timestamp' ---
+              final aTimestamp =
+              (aData['timestamp'] as Timestamp?)?.toDate();
+              final bTimestamp =
+              (bData['timestamp'] as Timestamp?)?.toDate();
+
+              // Handle nulls
+              if (aTimestamp == null && bTimestamp == null) return 0;
+              if (aTimestamp == null) return 1; // Put nulls at the end
+              if (bTimestamp == null) return -1; // Keep non-nulls at the start
+
+              // Sort descending (newest first)
+              return bTimestamp.compareTo(aTimestamp);
+            });
+          } catch (e) {
+            // Handle potential sort error (e.g., bad data)
+            debugPrint("Error sorting documents: $e");
+          }
+          // --- End of FIX ---
 
           return ListView.separated(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),

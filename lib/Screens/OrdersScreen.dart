@@ -1393,9 +1393,20 @@ class _OrderCard extends StatelessWidget {
 
 
 
+
+
+// --- ADDED: Import for loading font assets ---
+
 Future<void> printReceipt(
     BuildContext context, DocumentSnapshot orderDoc) async {
   try {
+    // --- ADDED: Load Arabic Font ---
+    // Make sure this path matches your file location in Step 1
+    final fontData =
+    await rootBundle.load("assets/fonts/NotoSansArabic-Regular.ttf");
+    final pw.Font arabicFont = pw.Font.ttf(fontData);
+    // --- END FONT ---
+
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async {
         // --- 1. Extract Order Data ---
@@ -1406,6 +1417,12 @@ Future<void> printReceipt(
         final List<Map<String, dynamic>> items = rawItems.map((e) {
           final m = Map<String, dynamic>.from(e as Map);
           final name = (m['name'] ?? 'Item').toString();
+
+          // --- UPDATED: This is the logic you asked for ---
+          // It looks for 'name_ar' and falls back to the English 'name' if not found.
+          final nameAr = (m['name_ar'] ?? name).toString();
+          // --- End update ---
+
           final qtyRaw = m.containsKey('quantity') ? m['quantity'] : m['qty'];
           final qty = int.tryParse(qtyRaw?.toString() ?? '1') ?? 1;
           final priceRaw = m['price'] ?? m['unitPrice'] ?? m['amount'];
@@ -1413,12 +1430,18 @@ Future<void> printReceipt(
             num n => n.toDouble(),
             _ => double.tryParse(priceRaw?.toString() ?? '0') ?? 0.0,
           };
-          return {'name': name, 'qty': qty, 'price': price};
+
+          // --- UPDATED: Add Arabic name to item map ---
+          return {'name': name, 'name_ar': nameAr, 'qty': qty, 'price': price};
         }).toList();
 
         final double subtotal = (order['subtotal'] as num?)?.toDouble() ?? 0.0;
+
+        // --- REQUIREMENT 1: Discount is already fetched here ---
         final double discount =
             (order['discountAmount'] as num?)?.toDouble() ?? 0.0;
+        // ---
+
         final double totalAmount =
             (order['totalAmount'] as num?)?.toDouble() ?? 0.0;
         final double calculatedSubtotal =
@@ -1442,6 +1465,16 @@ Future<void> printReceipt(
             .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
             .join(' ');
 
+        // --- ADDED: Arabic translations (you can expand this) ---
+        final Map<String, String> orderTypeTranslations = {
+          'Delivery': 'توصيل',
+          'Takeaway': 'سفري',
+          'Pickup': 'يستلم',
+          'Dine-in': 'تناول الطعام في الداخل',
+        };
+        final String displayOrderTypeAr = orderTypeTranslations[displayOrderType] ?? displayOrderType;
+        // --- End translations ---
+
         final String dailyOrderNumber = order['dailyOrderNumber']?.toString() ??
             orderDoc.id.substring(0, 6).toUpperCase();
 
@@ -1452,6 +1485,12 @@ Future<void> printReceipt(
         rawOrderType.toLowerCase() == 'takeaway' && carPlate.isNotEmpty
             ? 'Car Plate: $carPlate'
             : customerName;
+        // --- ADDED: Arabic customer display ---
+        final String customerDisplayAr =
+        rawOrderType.toLowerCase() == 'takeaway' && carPlate.isNotEmpty
+            ? 'لوحة السيارة: $carPlate'
+            : (customerName == 'Walk-in Customer' ? 'عميل مباشر' : customerName);
+
 
         // --- 2. Fetch Branch Details ---
         final List<dynamic> branchIds = order['branchIds'] ?? [];
@@ -1459,8 +1498,10 @@ Future<void> printReceipt(
         branchIds.isNotEmpty ? branchIds.first.toString() : '';
 
         String branchName = "Restaurant Name"; // Fallback
+        String branchNameAr = "اسم المطعم"; // --- ADDED Arabic fallback
         String branchPhone = "";
         String branchAddress = "";
+        String branchAddressAr = ""; // --- ADDED
         pw.ImageProvider? branchLogo;
 
         try {
@@ -1472,6 +1513,10 @@ Future<void> printReceipt(
             if (branchSnap.exists) {
               final branchData = branchSnap.data()!;
               branchName = branchData['name'] ?? "Restaurant Name";
+
+              // --- ADDED: Assumes 'name_ar' in your Branch data ---
+              branchNameAr = branchData['name_ar'] ?? branchName;
+
               branchPhone = branchData['phone'] ?? "";
               final addressMap =
                   branchData['address'] as Map<String, dynamic>? ?? {};
@@ -1480,6 +1525,14 @@ Future<void> printReceipt(
               branchAddress = (street.isNotEmpty && city.isNotEmpty)
                   ? "$street, $city"
                   : (street + city);
+
+              // --- ADDED: Assumes 'street_ar' and 'city_ar' in branch address map
+              final streetAr = addressMap['street_ar'] ?? street;
+              final cityAr = addressMap['city_ar'] ?? city;
+              branchAddressAr = (streetAr.isNotEmpty && cityAr.isNotEmpty)
+                  ? "$streetAr, $cityAr"
+                  : (streetAr + cityAr);
+              // --- End Added
             }
           }
         } catch (e) {
@@ -1488,6 +1541,9 @@ Future<void> printReceipt(
 
         // --- 3. Build the PDF ---
         final pdf = pw.Document();
+
+        // --- UPDATED: Bilingual Styles ---
+        // English styles (default font)
         const pw.TextStyle regular = pw.TextStyle(fontSize: 9);
         final pw.TextStyle bold =
         pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold);
@@ -1502,6 +1558,54 @@ Future<void> printReceipt(
             fontWeight: pw.FontWeight.bold,
             color: PdfColors.black);
 
+        // Arabic styles (using the loaded font)
+        final pw.TextStyle arRegular = pw.TextStyle(font: arabicFont, fontSize: 9);
+        final pw.TextStyle arBold =
+        pw.TextStyle(font: arabicFont, fontSize: 9, fontWeight: pw.FontWeight.bold);
+        final pw.TextStyle arHeading = pw.TextStyle(
+            font: arabicFont,
+            fontSize: 16,
+            fontWeight: pw.FontWeight.bold,
+            color: PdfColors.black);
+        final pw.TextStyle arTotal = pw.TextStyle(
+            font: arabicFont,
+            fontSize: 12,
+            fontWeight: pw.FontWeight.bold,
+            color: PdfColors.black);
+        // --- END STYLES ---
+
+
+        // --- ADDED: Helper for bilingual text labels ---
+        pw.Widget buildBilingualLabel(String en, String ar, {required pw.TextStyle enStyle, required pw.TextStyle arStyle, pw.CrossAxisAlignment alignment = pw.CrossAxisAlignment.start}) {
+          return pw.Column(
+            crossAxisAlignment: alignment,
+            children: [
+              pw.Text(en, style: enStyle),
+              pw.Text(ar, style: arStyle, textDirection: pw.TextDirection.rtl),
+            ],
+          );
+        }
+
+        // --- ADDED: Helper for bilingual summary rows ---
+        pw.Widget buildSummaryRow(String en, String ar, String value, {required pw.TextStyle enStyle, required pw.TextStyle arStyle, required pw.TextStyle valueStyle, PdfColor? valueColor}) {
+          final finalValueStyle = valueColor != null ? valueStyle.copyWith(color: valueColor) : valueStyle;
+          return pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text(en, style: enStyle),
+                    pw.Text(ar, style: arStyle, textDirection: pw.TextDirection.rtl),
+                  ]
+              ),
+              pw.Text(value, style: finalValueStyle, textAlign: pw.TextAlign.right),
+            ],
+          );
+        }
+        // --- End Helpers ---
+
+
         pdf.addPage(
           pw.Page(
             pageFormat: PdfPageFormat.roll80,
@@ -1515,35 +1619,52 @@ Future<void> printReceipt(
                           height: 60, fit: pw.BoxFit.contain),
                     ),
                   pw.SizedBox(height: 5),
+
+                  // --- UPDATED: Bilingual Headers ---
                   pw.Center(child: pw.Text(branchName, style: heading)),
+                  pw.Center(child: pw.Text(branchNameAr, style: arHeading, textDirection: pw.TextDirection.rtl)),
+
                   if (branchAddress.isNotEmpty)
-                    pw.Center(child: pw.Text(branchAddress, style: regular)),
+                    pw.Center(child: pw.Text(branchAddress, style: regular, textAlign: pw.TextAlign.center)),
+                  if (branchAddressAr.isNotEmpty)
+                    pw.Center(child: pw.Text(branchAddressAr, style: arRegular, textDirection: pw.TextDirection.rtl, textAlign: pw.TextAlign.center)),
+
                   if (branchPhone.isNotEmpty)
                     pw.Center(
                         child: pw.Text("Tel: $branchPhone", style: regular)),
                   pw.SizedBox(height: 5),
+
                   pw.Center(
                       child: pw.Text("TAX INVOICE",
                           style: bold.copyWith(fontSize: 10))),
+                  pw.Center(
+                      child: pw.Text("فاتورة ضريبية",
+                          style: arBold.copyWith(fontSize: 10), textDirection: pw.TextDirection.rtl)),
+
                   pw.SizedBox(height: 10),
+
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
-                      pw.Text('Order #: $dailyOrderNumber', style: regular),
-                      pw.Text('Type: $displayOrderType', style: bold),
+                      buildBilingualLabel('Order #: $dailyOrderNumber', 'رقم الطلب: $dailyOrderNumber', enStyle: regular, arStyle: arRegular),
+                      buildBilingualLabel('Type: $displayOrderType', 'نوع: $displayOrderTypeAr', enStyle: bold, arStyle: arBold, alignment: pw.CrossAxisAlignment.end),
                     ],
                   ),
                   pw.SizedBox(height: 3),
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
-                      pw.Text('Date: $formattedDate', style: regular),
-                      pw.Text('Time: $formattedTime', style: regular),
+                      buildBilingualLabel('Date: $formattedDate', 'تاريخ: $formattedDate', enStyle: regular, arStyle: arRegular),
+                      buildBilingualLabel('Time: $formattedTime', 'زمن: $formattedTime', enStyle: regular, arStyle: arRegular, alignment: pw.CrossAxisAlignment.end),
                     ],
                   ),
                   pw.SizedBox(height: 3),
-                  pw.Text('Customer: $customerDisplay', style: regular),
+                  buildBilingualLabel('Customer: $customerDisplay', 'عميل: $customerDisplayAr', enStyle: regular, arStyle: arRegular),
+                  // --- END UPDATED HEADERS ---
+
                   pw.SizedBox(height: 10),
+
+                  // --- UPDATED: Bilingual Table Headers ---
                   pw.Table(
                     columnWidths: {
                       0: const pw.FlexColumnWidth(5),
@@ -1562,28 +1683,27 @@ Future<void> printReceipt(
                           pw.Padding(
                               padding:
                               const pw.EdgeInsets.symmetric(vertical: 4),
-                              child: pw.Text('ITEM', style: bold)),
+                              child: buildBilingualLabel('ITEM', 'بند', enStyle: bold, arStyle: arBold)),
                           pw.Padding(
                               padding:
                               const pw.EdgeInsets.symmetric(vertical: 4),
-                              child: pw.Text('QTY',
-                                  style: bold,
-                                  textAlign: pw.TextAlign.center)),
+                              child: buildBilingualLabel('QTY', 'كمية', enStyle: bold, arStyle: arBold, alignment: pw.CrossAxisAlignment.center)),
                           pw.Padding(
                               padding:
                               const pw.EdgeInsets.symmetric(vertical: 4),
-                              child: pw.Text('TOTAL',
-                                  style: bold,
-                                  textAlign: pw.TextAlign.right)),
+                              child: buildBilingualLabel('TOTAL', 'المجموع', enStyle: bold, arStyle: arBold, alignment: pw.CrossAxisAlignment.end)),
                         ],
                       ),
+                      // --- END UPDATED TABLE HEADERS ---
+
+                      // --- UPDATED: Bilingual Item Rows (using 'name_ar') ---
                       ...items.map((item) {
                         return pw.TableRow(
                           children: [
                             pw.Padding(
                                 padding:
                                 const pw.EdgeInsets.symmetric(vertical: 3),
-                                child: pw.Text(item['name'], style: regular)),
+                                child: buildBilingualLabel(item['name'], item['name_ar'], enStyle: regular, arStyle: arRegular)),
                             pw.Padding(
                                 padding:
                                 const pw.EdgeInsets.symmetric(vertical: 3),
@@ -1601,55 +1721,48 @@ Future<void> printReceipt(
                           ],
                         );
                       }),
+                      // --- END UPDATED ITEM ROWS ---
                     ],
                   ),
                   pw.SizedBox(height: 10),
+
+                  // --- UPDATED: Bilingual Summary Section ---
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.end,
                     children: [
-                      pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.end,
-                        children: [
-                          pw.Row(
-                            children: [
-                              pw.Text('Subtotal: ', style: regular),
-                              pw.SizedBox(width: 10),
-                              pw.Text('QAR ${finalSubtotal.toStringAsFixed(2)}',
-                                  style: bold,
-                                  textAlign: pw.TextAlign.right),
-                            ],
-                          ),
-                          if (discount > 0)
-                            pw.Row(
-                              children: [
-                                pw.Text('Discount: ', style: regular),
-                                pw.SizedBox(width: 10),
-                                pw.Text(
-                                    '- QAR ${discount.toStringAsFixed(2)}',
-                                    style:
-                                    bold.copyWith(color: PdfColors.green),
-                                    textAlign: pw.TextAlign.right),
-                              ],
-                            ),
-                          pw.Divider(height: 5, color: PdfColors.grey),
-                          pw.Row(
-                            children: [
-                              pw.Text('TOTAL: ', style: total),
-                              pw.SizedBox(width: 10),
-                              pw.Text('QAR ${totalAmount.toStringAsFixed(2)}',
-                                  style: total,
-                                  textAlign: pw.TextAlign.right),
-                            ],
-                          ),
-                        ],
+                      pw.Expanded( // Use Expanded to allow column to take width
+                        child: pw.Column(
+                          crossAxisAlignment: pw.CrossAxisAlignment.stretch, // Stretch to fill width
+                          children: [
+                            // Subtotal
+                            buildSummaryRow('Subtotal:', 'المجموع الفرعي:', 'QAR ${finalSubtotal.toStringAsFixed(2)}', enStyle: regular, arStyle: arRegular, valueStyle: bold),
+
+                            // --- REQUIREMENT 1: Discount is displayed here if > 0 ---
+                            if (discount > 0)
+                              buildSummaryRow('Discount:', 'خصم:', '- QAR ${discount.toStringAsFixed(2)}', enStyle: regular, arStyle: arRegular, valueStyle: bold, valueColor: PdfColors.green),
+
+                            pw.Divider(height: 5, color: PdfColors.grey),
+
+                            // Total
+                            buildSummaryRow('TOTAL:', 'المجموع الكلي:', 'QAR ${totalAmount.toStringAsFixed(2)}', enStyle: total, arStyle: arTotal, valueStyle: total),
+                          ],
+                        ),
                       ),
                     ],
                   ),
+                  // --- END UPDATED SUMMARY ---
+
                   pw.SizedBox(height: 20),
                   pw.Divider(thickness: 1),
                   pw.SizedBox(height: 5),
+
+                  // --- UPDATED: Bilingual Footer ---
                   pw.Center(
                       child: pw.Text("Thank You For Your Order!", style: bold)),
+                  pw.Center(
+                      child:
+                      pw.Text("شكرا لطلبك!", style: arBold, textDirection: pw.TextDirection.rtl)),
+
                   pw.SizedBox(height: 5),
                   pw.Center(
                       child:
